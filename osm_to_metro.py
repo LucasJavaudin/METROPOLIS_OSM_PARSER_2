@@ -4,7 +4,6 @@ import csv
 import gc
 import osmium
 import sys
-import os.path
 from os import path
 
 class Writer(osmium.SimpleHandler):
@@ -241,7 +240,7 @@ if __name__ == '__main__':
         print("Please specify the name of the OSM file and the extension.")
         sys.exit(0)
 
-    file = sys.argv[1]#"Paris.osm.pbf"
+    file = sys.argv[1]
 
     #File does not exists or is not in the same folder as the script
     if not path.exists(file):
