@@ -3,6 +3,9 @@ from math import radians, cos, sin, asin, atan2, tan, sqrt
 import csv
 import gc
 import osmium
+import sys
+import os.path
+from os import path
 
 class Writer(osmium.SimpleHandler):
     crossings_file = None
@@ -20,14 +23,13 @@ class Writer(osmium.SimpleHandler):
 
     def __init__(self, nodes, new_nodes_id, nodes_appearances):
         osmium.SimpleHandler.__init__(self)
+        self.new_node_id = 0
         self.new_way_id = 0
         self.nodes = nodes
         self.new_nodes_id = new_nodes_id
         self.nodes_appearances = nodes_appearances
 
-        print("Hello world")
-
-        self.crossings_file = open('crossings.tsv', 'w', encoding='utf8',
+        self.crossings_file = open('intersections.tsv', 'w', encoding='utf8',
                                    newline='\n')
         self.crossings_writer = csv.writer(self.crossings_file, delimiter='\t')
         self.crossings_writer.writerow(['id', 'name', 'x', 'y'])
@@ -37,10 +39,6 @@ class Writer(osmium.SimpleHandler):
             ['id', 'name', 'lanes', 'length', 'speed', 'capacity', 'function',
              'origin',
              'destination'])
-
-
-    def node(self, n):
-        a = 5
 
     def way(self, w):
         self.write_way(w)
@@ -134,9 +132,18 @@ class Writer(osmium.SimpleHandler):
             length = round(length, 3)
             # Link: ['id', 'name', 'lanes', 'length', 'speed', 'capacity', 'function', 'origin', 'destination']
 
+            if OD_list[i] not in self.new_nodes_id:
+                self.new_nodes_id.update({OD_list[i]: self.new_node_id})
+                self.new_node_id += 1
+
             origin = self.new_nodes_id[OD_list[i]]
+
             if i == 0:
                 self.nodes_used.add(OD_list[i])
+
+            if OD_list[i + 1] not in self.new_nodes_id:
+                self.new_nodes_id.update({OD_list[i + 1]: self.new_node_id})
+                self.new_node_id += 1
 
             destination = self.new_nodes_id[OD_list[i + 1]]
             self.nodes_used.add(OD_list[i + 1])
@@ -216,9 +223,6 @@ class Parser(osmium.SimpleHandler):
         node = {'id': id, 'name': name, 'lat': x, 'lon': y}
 
         self.nodes.update({id: node})
-        self.new_nodes_id.update({id: self.new_node_id})
-
-        self.new_node_id += 1
 
     def register_way(self, way):
         nodes = way.nodes
@@ -232,25 +236,37 @@ class Parser(osmium.SimpleHandler):
 
 if __name__ == '__main__':
 
-    file = "Paris.osm.pbf"
+    #User forgot to input the file name
+    if len(sys.argv) < 2:
+        print("Please specify the name of the OSM file and the extension.")
+        sys.exit(0)
+
+    file = sys.argv[1]#"Paris.osm.pbf"
+
+    #File does not exists or is not in the same folder as the script
+    if not path.exists(file):
+        print("The file \'%s\' does not exists or is not in the same folder as the script." % file)
+        sys.exit(0)
 
     h = Parser()
 
+    print("Reading file....")
     h.apply_file(file, locations=True, idx='flex_mem')
-    print("Number of nodes: %d" % h.new_node_id)
+    print("Done!")
 
     g = Writer(h.nodes, h.new_nodes_id, h.nodes_appearances)
 
     h = None
     gc.collect()
 
+    print("Writing ways....")
     g.apply_file(file, locations=True, idx='flex_mem')
-
-    g.ways = False
-
+    print("Done!")
+    print("Writing nodes....")
     g.write_nodes()
+    print("Done!")
 
-    print("Number of nodes: %d" % g.new_way_id)
+    print("Finished!")
 
 
 
