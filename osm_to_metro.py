@@ -1,271 +1,209 @@
-import unicodedata
-from math import radians, cos, sin, asin, atan2, tan, sqrt
 import csv
-import gc
-import osmium
 import sys
-from os import path
+import os
+
+import osmium
+import geojson
+import shapely.wkb as wkblib
+from shapely.geometry import Point
+
+VALID_HIGHWAYS = ('motorway', 'trunk', 'primary', 'secondary', 'motorway_link',
+                  'trunk_link', 'primary_link', 'secondary_link',
+                  # 'tertiary', 'unclassified', 'road', 'residential',
+                  # 'living_street',
+                  )
+ROADTYPE_TO_ID = {
+    'motorway': 1,
+    'trunk': 2,
+    'primary': 3,
+    'secondary': 4,
+    # 'tertiary': 5,
+    # 'unclassified': 6,
+    # 'residential': 7,
+    'motorway_link': 8,
+    'trunk_link': 9,
+    'primary_link': 10,
+    'secondary_link': 11,
+    # 'living_street': 12,
+    # 'road': 13,
+}
+
+wkbfab = osmium.geom.WKBFactory()
+
 
 class Writer(osmium.SimpleHandler):
-    crossings_file = None
-    crossings_writer = None
-
-    links_file = None
-    links_writer = None
-
-    nodes = {}
-    nodes_appearances = {}
-    new_nodes_id = {}
-    nodes_used = set([])
-
-    ways = True
-
-    def __init__(self, nodes, new_nodes_id, nodes_appearances):
-        osmium.SimpleHandler.__init__(self)
-        self.new_node_id = 0
-        self.new_way_id = 0
-        self.nodes = nodes
-        self.new_nodes_id = new_nodes_id
-        self.nodes_appearances = nodes_appearances
-
-        self.crossings_file = open('intersections.tsv', 'w', encoding='utf8',
-                                   newline='\n')
-        self.crossings_writer = csv.writer(self.crossings_file, delimiter='\t')
-        self.crossings_writer.writerow(['id', 'name', 'x', 'y'])
-        self.links_file = open('links.tsv', 'w', encoding='utf8', newline='\n')
-        self.links_writer = csv.writer(self.links_file, delimiter='\t')
-        self.links_writer.writerow(
-            ['id', 'name', 'lanes', 'length', 'speed', 'capacity', 'function',
-             'origin',
-             'destination'])
-
-    def way(self, w):
-        self.write_way(w)
-
-    def write_nodes(self):
-
-        for n in self.nodes_used:
-            node = self.nodes[n]
-            id = self.new_nodes_id[n]
-            name = node['name']
-            x = node['lat']
-            y = node['lon']
-
-            self.crossings_writer.writerow([id, name, y, x])
-
-    def write_way(self, way):
-
-        if not self.is_highway(way.tags):
-            return
-
-        id = self.new_way_id
-        name = id
-        #Stores all the nodes the way goes through
-        OD_list = []
-        # Store all the nodes the way goes through, including those not part of an intersection
-        OD_list_complete = []
-        # TODO: Get length of road in Km
-        length = 1
-        # TODO: Estimate speed if not provided
-        speed = None
-        oneway = False
-        # congestion function
-        function = 2
-        # TODO: Estimate number of lanes
-        lanes = 1
-        # TODO: Find capacity
-        capacity = 3000
-
-        for index in range(len(way.nodes)):
-            if index == 0 or self.nodes_appearances[way.nodes[index].ref] > 1 or index == (len(way.nodes) - 1):
-                OD_list.append(way.nodes[index].ref)
-
-            OD_list_complete.append(way.nodes[index].ref)
-
-        if 'maxpeed' in way.tags:
-            speed = way.tags['maxspeed']
-
-        if 'oneway' in way.tags and way.tags['oneway'] == 'yes':
-            oneway = True
-
-        if 'junction' in way.tags and way.tags['junction'] == 'roundabout':
-            oneway = True
-
-        if 'lanes' in way.tags:
-            lanes = way.tags['lanes']
-
-        if 'name' in way.tags:
-            name = way.tags['name']
-            name = name[:45] + '..'
-
-        if 'addr:street' in way.tags:
-            name = way.tags['addr:street']
-            name = name[:45] + '..'
-
-        if self.get_way_type(way.tags) is not None and speed is None:
-            type = self.get_way_type(way.tags)
-            if type is "D":
-                speed = 80
-            elif type is "N":
-                speed = 110
-            elif type is "A":
-                speed = 130
-
-        if speed is None:
-            speed = 50
-
-        for i in range(len(OD_list) - 1):
-            length = 0
-            index_o = OD_list_complete.index(OD_list[i])
-            index_d = OD_list_complete.index(OD_list[i + 1])
-            elements = OD_list_complete[index_o:index_d + 1]
-
-            for j in range(len(elements) - 1):
-                node1_long = float(self.nodes[elements[j]]['lon'])
-                node1_lat = float(self.nodes[elements[j]]['lat'])
-                node2_long = float(self.nodes[elements[j + 1]]['lon'])
-                node2_lat = float(self.nodes[elements[j + 1]]['lat'])
-                length += self.get_way_length(node1_long, node1_lat,
-                                              node2_long, node2_lat)
-
-            length = round(length, 3)
-            # Link: ['id', 'name', 'lanes', 'length', 'speed', 'capacity', 'function', 'origin', 'destination']
-
-            if OD_list[i] not in self.new_nodes_id:
-                self.new_nodes_id.update({OD_list[i]: self.new_node_id})
-                self.new_node_id += 1
-
-            origin = self.new_nodes_id[OD_list[i]]
-
-            if i == 0:
-                self.nodes_used.add(OD_list[i])
-
-            if OD_list[i + 1] not in self.new_nodes_id:
-                self.new_nodes_id.update({OD_list[i + 1]: self.new_node_id})
-                self.new_node_id += 1
-
-            destination = self.new_nodes_id[OD_list[i + 1]]
-            self.nodes_used.add(OD_list[i + 1])
-
-            self.links_writer.writerow([self.new_way_id, name, lanes, length, speed, capacity, function, origin, destination])
-            self.new_way_id += 1
-            if not oneway:
-                self.links_writer.writerow([self.new_way_id, name, lanes, length, speed, capacity,function, destination, origin])
-                self.new_way_id += 1
-
-        return
-
-    #TODO: get way type (nationale, departementale, etc...)
-    def get_way_type(self, ways):
-        types = ["D", "A", "N"]
-
-        if 'ref' not in ways:
-            return None
-
-        elif ways['ref'][0] in types:
-            return ways['ref'][0]
-
-        else:
-            return None
-
-    #Uses the haversine formula to calculate distance between 2 points
-    def get_way_length(self, long1, lat1, long2, lat2):
-        #Earth radius in Km
-        r = 6371
-
-        a = sin(radians(lat2-lat1)/2)**2 + cos(lat1) * cos(lat2) * sin(radians(long2-long1)/2)**2
-        c = 2 * atan2(sqrt(a), sqrt(1-a))
-        distance = r * c
-        return distance
-
-
-    def is_highway(self, ways):
-
-        not_highway = ["footway", "service", "track", "bus_guideway", "escape", "raceway", "bridleway", "steps", "path", "sidewalk", "cycleway", "pedestrian"]
-
-        if 'highway' in ways and ways['highway'] not in not_highway:
-            return True
-        else:
-            return False
-
-
-class Parser(osmium.SimpleHandler):
-    nodes = {}
-    nodes_appearances = {}
-    new_nodes_id = {}
 
     def __init__(self):
-        osmium.SimpleHandler.__init__(self)
-        self.new_node_id = 0
-
-    def node(self, n):
-        self.register_node(n)
+        super(Writer, self).__init__()
+        self.edges = list()
+        self.nodes = dict()
+        self.counter = 1
 
     def way(self, w):
-        self.register_way(w)
+        self.add_way(w)
 
-    def register_node(self, node):
-        id = node.id
-        name = id
+    def add_way(self, way):
 
-        location = node.location
-        x = location.lat
-        y = location.lon
+        road_type = way.tags.get('highway', None)
+        if road_type not in VALID_HIGHWAYS:
+            return
+        road_type = ROADTYPE_TO_ID[road_type]
 
-        tags = node.tags
+        name = (
+            way.tags.get('name', '')
+            or way.tags.get('addr:street', '')
+            or way.tags.get('ref', '')
+        )
 
-        if 'name' in tags:
-            name = tags['name']
-            name = unicodedata.normalize('NFD', name)
-            name = name.encode('ascii', 'ignore')
+        source = way.nodes[0].ref
+        target = way.nodes[-1].ref
 
-        node = {'id': id, 'name': name, 'lat': x, 'lon': y}
+        oneway = way.tags.get('oneway', 'no') == 'yes'
 
-        self.nodes.update({id: node})
+        edge_id = self.counter
+        self.counter += 1
+        if not oneway:
+            back_edge_id = self.counter
+            self.counter += 1
 
-    def register_way(self, way):
-        nodes = way.nodes
+        # Find maximum speed if available.
+        try:
+            speed = float(way.tags.get('maxspeed', ''))
+        except ValueError:
+            speed = None
+        if not oneway:
+            try:
+                speed = float(way.tags.get('maxspeed:forward', '0')) or speed
+            except ValueError:
+                speed = None
+            try:
+                back_speed = (
+                    float(way.tags.get('maxspeed:backward', '0'))
+                    or speed
+                )
+            except ValueError:
+                back_speed = None
 
-        for node in nodes:
-            if node.ref in self.nodes_appearances:
-                self.nodes_appearances.update({node.ref: self.nodes_appearances[node.ref] + 1})
-            else:
-                self.nodes_appearances.update({node.ref: 1})
+        # Find number of lanes if available.
+        if oneway:
+            try:
+                lanes = int(way.tags.get('lanes', ''))
+            except ValueError:
+                lanes = None
+        else:
+            try:
+                lanes = (
+                    int(way.tags.get('lanes:forward', '0'))
+                    or int(way.tags.get('lanes', '')) // 2
+                )
+            except ValueError:
+                lanes = None
+            try:
+                back_lanes = (
+                    int(way.tags.get('lanes:backward', '0'))
+                    or int(way.tags.get('lanes', '')) // 2
+                )
+            except ValueError:
+                back_lanes = None
+
+        # Create a geometry of the road.
+        wkb = wkbfab.create_linestring(way)
+        geometry = wkblib.loads(wkb, hex=True)
+        if not oneway:
+            wkb = wkbfab.create_linestring(
+                way, direction=osmium.geom.direction.BACKWARD)
+            back_geometry = wkblib.loads(wkb, hex=True)
+
+        # Add source and target to the nodes of the network.
+        self.nodes[source] = geojson.Feature(
+            geometry=Point(geometry.coords[0]),
+            properties={"id": source}
+        )
+        self.nodes[target] = geojson.Feature(
+            geometry=Point(geometry.coords[-1]),
+            properties={"id": target}
+        )
+
+        # Compute length in kilometers.
+        length = osmium.geom.haversine_distance(way.nodes) / 1e3
+
+        self.edges.append(geojson.Feature(
+            geometry=geometry,
+            properties={
+                "id": edge_id,
+                "name": name,
+                "road_type": road_type,
+                "lanes": lanes,
+                "length": length,
+                "speed": speed,
+                "source": source,
+                "target": target,
+                "osm_id": way.id,
+            },
+        ))
+
+        if not oneway:
+            self.edges.append(geojson.Feature(
+                geometry=back_geometry,
+                properties={
+                    "id": back_edge_id,
+                    "name": name,
+                    "road_type": road_type,
+                    "lanes": back_lanes,
+                    "length": length,
+                    "speed": back_speed,
+                    "source": target,
+                    "target": source,
+                    "osm_id": way.id,
+                },
+            ))
+
+    def write_ways(self, filename):
+        feature_collection = geojson.FeatureCollection(
+            self.edges,
+            crs={
+                "type": "name",
+                "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}
+            },
+        )
+        with open(filename, 'w', encoding='utf-8') as f:
+            geojson.dump(feature_collection, f)
+
+    def write_nodes(self, filename):
+        feature_collection = geojson.FeatureCollection(
+            list(self.nodes.values()),
+            crs={
+                "type": "name",
+                "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}
+            },
+        )
+        with open(filename, 'w', encoding='utf-8') as f:
+            geojson.dump(feature_collection, f)
 
 
 if __name__ == '__main__':
 
-    #User forgot to input the file name
+    # User forgot to input the file name.
     if len(sys.argv) < 2:
         print("Please specify the name of the OSM file and the extension.")
         sys.exit(0)
 
-    file = sys.argv[1]
+    filename = sys.argv[1]
 
-    #File does not exists or is not in the same folder as the script
-    if not path.exists(file):
-        print("The file \'%s\' does not exists or is not in the same folder as the script." % file)
+    # File does not exists or is not in the same folder as the script.
+    if not os.path.exists(filename):
+        print("File not found: {}".format(filename))
         sys.exit(0)
 
-    h = Parser()
+    g = Writer()
 
-    print("Reading file....")
-    h.apply_file(file, locations=True, idx='flex_mem')
+    print("Reading OSM data...")
+    g.apply_file(filename, locations=True, idx='flex_mem')
+
+    print("Writing ways...")
+    g.write_ways('idf_osm_2021/edges.geojson')
+
+    print("Writing nodes...")
+    g.write_nodes('idf_osm_2021/nodes.geojson')
+
     print("Done!")
-
-    g = Writer(h.nodes, h.new_nodes_id, h.nodes_appearances)
-
-    h = None
-    gc.collect()
-
-    print("Writing ways....")
-    g.apply_file(file, locations=True, idx='flex_mem')
-    print("Done!")
-    print("Writing nodes....")
-    g.write_nodes()
-    print("Done!")
-
-    print("Finished!")
-
-
-
